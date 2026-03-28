@@ -1,14 +1,55 @@
-# astrbot-plugin-helloworld
+# astrbot-plugin-analysis-douyin
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+一个基于 AstrBot 框架的轻量级抖音链接自动解析插件。能够自动识别消息中的抖音分享链接，提取视频元数据并智能分发视频或封面。
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+> 🤖 **本插件代码及文档由 AI (Gemini) 辅助生成。**
 
-# Supports
+---
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+## 🌟 功能特性
+
+- **自动识别**：无需特定指令，智能监测聊天内容中的 `v.douyin.com` 短链接。
+- **详尽数据**：解析并展示视频标题、博主昵称、点赞数、评论数、分享数及收藏数。
+- **智能分发**：
+  - **短视频**：自动下载并发送无水印视频。
+  - **长视频**：超过设定阈值（默认 300s）时，自动发送视频封面及直链，节省流量与服务器压力。
+  - **图集**：自动识别图集模式并发送高清首图。
+- **健壮下载**：内置多套 Header 抓取策略，有效规避 403 Forbidden 防盗链拦截。
+- **自动清理**：媒体文件发送后立即从服务器删除，不占用额外的存储空间。
+
+---
+
+## 🚀 安装与使用
+
+1. **安装**：下载本项目,在astrbot插件市场安装。
+2. **触发**：在机器人所在的群聊或私聊中，直接发送抖音分享链接即可。
+   - *示例*：`7.23 复制打开抖音，看看【某某的作品】... https://v.douyin.com/xxxxxx/`
+3. **反馈**：机器人会先回复一条包含视频信息的文字卡片，随后发送视频文件或封面图。
+
+---
+
+## ⚙️ 插件配置
+
+你可以在 AstrBot 管理面板的“插件配置”中找到本项目，调整以下参数：
+
+| 配置项               | 类型 | 默认值 | 说明                                                     |
+| :------------------- | :--- | :----- | :------------------------------------------------------- |
+| `max_video_duration` | int  | 300    | 允许直接发送视频的最大时长（秒）。超过此值将仅发送封面。 |
+
+---
+
+## 📁 存储规范
+
+- **临时文件**：下载的媒体文件暂存于 `data/plugin_data/douyin_parser/`。
+- **持久化配置**：插件设置存储于 `data/config/` 目录下。
+
+---
+
+## 🛠️ 开发原则遵循
+
+- [x] 采用 `aiohttp` 异步请求。
+- [x] 遵循 `Star` 类继承规范。
+- [x] 完善的错误处理与日志记录。
+- [x] 媒体文件即用即删。
+
+---
