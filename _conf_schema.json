@@ -1,0 +1,8 @@
+{
+  "max_video_duration": {
+    "description": "最大允许发送的视频时长（秒）",
+    "type": "int",
+    "hint": "超过此时长的视频将仅发送封面和直链。默认 300 秒（5分钟）。",
+    "default": 300
+  }
+}
