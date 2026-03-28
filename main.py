@@ -11,13 +11,12 @@ import astrbot.api.message_components as Comp
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 
-@register("douyin_parser", "YourName", "抖音分享链接自动解析插件", "1.1.0")
+@register("douyin_parser", "YourName", "抖音分享链接自动解析插件", "1.3.0")
 class DouyinParser(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
 
-        # 修复点 1：使用 os.path.join 替代 / 进行字符串路径拼接
         self.plugin_data_path = os.path.join(get_astrbot_data_path(), "plugin_data", "douyin_parser")
         os.makedirs(self.plugin_data_path, exist_ok=True)
 
@@ -26,7 +25,6 @@ class DouyinParser(Star):
         '''监听所有消息，提取并解析抖音链接'''
         message_str = event.message_str
 
-        # 正则匹配抖音的短链接形式
         urls = re.findall(r'https://v\.douyin\.com/[a-zA-Z0-9]+/?', message_str)
         if not urls:
             return
@@ -34,17 +32,23 @@ class DouyinParser(Star):
         for url in urls:
             file_to_delete = None
             try:
-                # 解析抖音链接并获取要发送的消息链以及本地文件路径
-                chain, file_to_delete = await self.parse_douyin(url)
-                if chain:
-                    yield event.chain_result(chain)
+                # 接收拆分后的两个消息链：文字信息链、独立媒体链
+                info_chain, media_chain, file_to_delete = await self.parse_douyin(url)
+
+                # 1. 先发送文本信息（如果是图文，也在这里发送）
+                if info_chain:
+                    yield event.chain_result(info_chain)
+
+                # 2. 再单独发送视频/图片本体，适配 QQ 视频独占的规则
+                if media_chain:
+                    yield event.chain_result(media_chain)
 
             except Exception as e:
                 logger.error(f"抖音链接解析失败: {e}")
                 yield event.plain_result(f"⚠️ 抖音解析出错了: {str(e)}")
 
             finally:
-                # 这一步非常关键：yield 挂起交由框架发送消息，发送完成后代码从这里继续执行，触发清理逻辑
+                # 等两个 yield 都执行（即消息都发送完毕）后，清理临时文件
                 if file_to_delete and os.path.exists(file_to_delete):
                     try:
                         os.remove(file_to_delete)
@@ -52,26 +56,58 @@ class DouyinParser(Star):
                     except Exception as e:
                         logger.error(f"清理临时文件失败: {file_to_delete}, 错误: {e}")
 
-    async def parse_douyin(self, url: str) -> tuple[list, str]:
+    async def _download_media_robust(self, session: aiohttp.ClientSession, urls: list, file_path: str) -> bool:
+        '''多策略轮询下载媒体文件，专治 403 Forbidden'''
+        header_strategies = [
+            {
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 8.0.0; SM-G955U Build/R16NW) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36',
+                'Referer': 'https://www.douyin.com/'
+            },
+            {
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 8.0.0; SM-G955U Build/R16NW) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36'
+            },
+            {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        ]
+
+        for url in urls:
+            if not url:
+                continue
+
+            for headers in header_strategies:
+                try:
+                    async with session.get(url, headers=headers, allow_redirects=True, timeout=15) as resp:
+                        if resp.status == 200:
+                            with open(file_path, 'wb') as f:
+                                async for chunk in resp.content.iter_chunked(8192):
+                                    f.write(chunk)
+                            return True
+                        else:
+                            continue
+                except Exception as e:
+                    continue
+        return False
+
+    async def parse_douyin(self, url: str) -> tuple[list, list, str]:
         '''
-        异步获取并解析抖音视频数据，下载媒体到本地。
-        返回: (MessageChain列表, 下载到本地的临时文件路径)
+        提取抖音信息并分发下载任务。
+        返回: (信息消息链, 独立媒体消息链, 下载到本地的临时文件路径)
         '''
-        headers = {
+        init_headers = {
             'user-agent': 'Mozilla/5.0 (Linux; Android 8.0.0; SM-G955U Build/R16NW) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36',
-            'referer': 'https://www.douyin.com/?is_from_mobile_home=1&recommend=1'
         }
 
         async with aiohttp.ClientSession() as session:
             # 1. 获取网页 JSON 数据
-            async with session.get(url, headers=headers) as resp:
+            async with session.get(url, headers=init_headers, allow_redirects=True) as resp:
                 if resp.status != 200:
-                    raise Exception(f"网络请求失败，状态码: {resp.status}")
+                    raise Exception(f"页面请求失败，状态码: {resp.status}")
                 res = await resp.text()
 
             data_match = re.findall(r'window\._ROUTER_DATA\s*=\s*(.*?)</script>', res)
             if not data_match:
-                raise Exception("未能从页面提取到有效数据，可能由于风控或链接失效。")
+                raise Exception("页面未包含 JSON 数据，可能是频繁请求被拦截，或链接已失效。")
 
             json_data = json.loads(data_match[0])
             item = json_data['loaderData']['video_(id)/page']['videoInfoRes']['item_list'][0]
@@ -90,62 +126,61 @@ class DouyinParser(Star):
                 f"👤 博主: {nickname}\n"
                 f"❤️ 点赞: {digg_count} | 💬 评论: {comment_count} | 🔄 分享: {share_count} | ⭐ 收藏: {collect_count}\n"
             )
-            chain = [Comp.Plain(info_text)]
+            # 信息链，专门负责发文字
+            info_chain = [Comp.Plain(info_text)]
 
-            # 3. 判断媒体类型及逻辑分发
+            # 3. 收集备用下载链接列表
             images = item.get('images')
-            download_url = ""
+            download_urls = []
             file_ext = ""
             is_video = False
 
-            # 获取动态配置的阈值，默认300秒
             max_duration = self.config.get("max_video_duration", 300)
 
             if images:
-                # [情况A] 图集
-                download_url = images[0]['url_list'][0]
+                # [图集]
+                download_urls = images[0].get('url_list', [])
                 file_ext = ".jpg"
-                chain.append(Comp.Plain("📷 类型: 图集 (已发送首图)\n"))
+                info_chain.append(Comp.Plain("📷 类型: 图集 (已为您提取首图)\n"))
             else:
-                # [情况B] 视频
+                # [视频]
                 duration_sec = item.get('video', {}).get('duration', 0) / 1000
                 video_uri = item['video']['play_addr'].get('uri', '')
-                video_url = f"https://www.douyin.com/aweme/v1/play/?video_id={video_uri}"
-                cover_url = item['video']['cover']['url_list'][0]
+
+                custom_url = f"https://www.douyin.com/aweme/v1/play/?video_id={video_uri}"
+                fallback_urls = item['video']['play_addr'].get('url_list', [])
+                cover_urls = item['video']['cover'].get('url_list', [])
 
                 if duration_sec <= max_duration:
-                    # 视频不超长，下载视频
-                    download_url = video_url
+                    download_urls = [custom_url] + fallback_urls
                     file_ext = ".mp4"
                     is_video = True
-                    chain.append(Comp.Plain(f"⏱️ 时长: {duration_sec:.1f}秒\n"))
+                    # info_chain.append(Comp.Plain(f"⏱️ 时长: {duration_sec:.1f}秒"))
                 else:
-                    # 视频超长，下载封面
-                    download_url = cover_url
+                    download_urls = cover_urls
                     file_ext = ".jpg"
                     warning_text = (
                         f"⏱️ 时长: {duration_sec:.1f}秒\n"
                         f"⚠️ 视频超过设定阈值 ({max_duration}s)，为您发送封面与解析直链：\n"
-                        f"🔗 直链: {video_url}\n"
+                        f"🔗 直链: {custom_url}"
                     )
-                    chain.append(Comp.Plain(warning_text))
+                    info_chain.append(Comp.Plain(warning_text))
 
-            # 4. 下载选定的媒体文件到规范目录
-            file_name = f"{uuid.uuid4().hex}{file_ext}"  # 使用 UUID 避免文件名冲突
-            # 修复点 2：使用 os.path.join 替代 / 进行路径拼接
+            # 4. 执行多策略下载
+            file_name = f"{uuid.uuid4().hex}{file_ext}"
             local_file_path = os.path.join(self.plugin_data_path, file_name)
 
-            async with session.get(download_url, headers=headers) as media_resp:
-                if media_resp.status == 200:
-                    with open(local_file_path, 'wb') as f:
-                        f.write(await media_resp.read())
-                else:
-                    raise Exception(f"媒体文件下载失败，状态码: {media_resp.status}")
+            success = await self._download_media_robust(session, download_urls, local_file_path)
+            if not success:
+                raise Exception("下载被抖音防火墙拦截 (403/404)，所有备用节点尝试均失败。")
 
-            # 5. 组装最终的 MessageChain
+            # 5. 组装独立的媒体链
+            media_chain = []
             if is_video:
-                chain.append(Comp.Video.fromFileSystem(local_file_path))
+                media_chain.append(Comp.Video.fromFileSystem(local_file_path))
             else:
-                chain.append(Comp.Image.fromFileSystem(local_file_path))
+                # 即使是图集或封面，也作为单独一条消息发出，保证极佳的排版观感
+                media_chain.append(Comp.Image.fromFileSystem(local_file_path))
 
-            return chain, local_file_path
+            # 将两个链分开返回
+            return info_chain, media_chain, local_file_path
